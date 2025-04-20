@@ -167,7 +167,6 @@
 
 import streamlit as st
 import pandas as pd
-from pyxlsb import open_workbook
 from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
@@ -175,53 +174,69 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 
 st.set_page_config(page_title="⚡ Voltage Analyzer", layout="wide")
 st.title("⚡ Voltage Abnormal Trend Analyzer with Chart-Embedded Excel")
-st.markdown("Upload multiple `.xlsb` voltage files and one static **Master Excel** to generate a full summary report with per-meter charts.")
+st.markdown("Upload daily `.xlsb` or `.xlsx` voltage files and one static **Master Excel** to generate a full summary report with per-meter charts.")
 
-uploaded_files = st.file_uploader("Upload daily `.xlsb` voltage files", type="xlsb", accept_multiple_files=True)
+# Accept both xlsb and xlsx files
+uploaded_files = st.file_uploader(
+    "Upload daily `.xlsb` or `.xlsx` voltage files",
+    type=["xlsb", "xlsx"],
+    accept_multiple_files=True
+)
+
 master_file = st.file_uploader("Upload static Master Data Excel", type=["xlsx", "xls"])
 
-# ✅ Extract phase-wise voltage abnormality
+# ✅ Extract phase-wise voltage abnormality from either format
 def extract_phasewise_uv_ov(file):
     try:
-        with open_workbook(file) as wb:
-            sheet = wb.get_sheet(wb.sheets[0])
-            data = [row for row in sheet.rows()]
+        if file.name.endswith(".xlsb"):
+            from pyxlsb import open_workbook
+            with open_workbook(file) as wb:
+                sheet = wb.get_sheet(wb.sheets[0])
+                data = [row for row in sheet.rows()]
+            rows = [[cell.v for cell in row] for row in data[2:]]
+
+        elif file.name.endswith(".xlsx"):
+            df = pd.read_excel(file, sheet_name=0, header=None, skiprows=2)
+            rows = df.values.tolist()
+        else:
+            st.warning(f"❌ Unsupported file format: {file.name}")
+            return None
+
+        records = []
+        for row in rows:
+            try:
+                bus_meter_no = str(row[7]).strip()
+                from_date = pd.to_datetime(row[1], unit='d', origin='1899-12-30')
+
+                uv_r = float(row[11]) if row[11] is not None else 0.0
+                uv_y = float(row[12]) if row[12] is not None else 0.0
+                uv_b = float(row[13]) if row[13] is not None else 0.0
+
+                ov_r = float(row[14]) if row[14] is not None else 0.0
+                ov_y = float(row[15]) if row[15] is not None else 0.0
+                ov_b = float(row[16]) if row[16] is not None else 0.0
+
+                if any([uv_r, uv_y, uv_b, ov_r, ov_y, ov_b]):
+                    records.append({
+                        "BUS_METER_NO": bus_meter_no,
+                        "DATE": from_date,
+                        "UV_R": uv_r,
+                        "UV_Y": uv_y,
+                        "UV_B": uv_b,
+                        "OV_R": ov_r,
+                        "OV_Y": ov_y,
+                        "OV_B": ov_b
+                    })
+            except:
+                continue
+
+        return pd.DataFrame(records)
+
     except Exception as e:
-        st.error(f"❌ Failed to read {file.name}: {e}")
+        st.error(f"⚠️ Failed to read {file.name}: {e}")
         return None
 
-    rows = [[cell.v for cell in row] for row in data[2:]]
-    records = []
-
-    for row in rows:
-        try:
-            bus_meter_no = str(row[7]).strip()
-            from_date = pd.to_datetime(row[1], unit='d', origin='1899-12-30')
-
-            uv_r = float(row[11]) if row[11] is not None else 0.0
-            uv_y = float(row[12]) if row[12] is not None else 0.0
-            uv_b = float(row[13]) if row[13] is not None else 0.0
-
-            ov_r = float(row[14]) if row[14] is not None else 0.0
-            ov_y = float(row[15]) if row[15] is not None else 0.0
-            ov_b = float(row[16]) if row[16] is not None else 0.0
-
-            if any([uv_r, uv_y, uv_b, ov_r, ov_y, ov_b]):
-                records.append({
-                    "BUS_METER_NO": bus_meter_no,
-                    "DATE": from_date,
-                    "UV_R": uv_r,
-                    "UV_Y": uv_y,
-                    "UV_B": uv_b,
-                    "OV_R": ov_r,
-                    "OV_Y": ov_y,
-                    "OV_B": ov_b
-                })
-        except:
-            continue
-
-    return pd.DataFrame(records)
-
+# 🧠 Processing
 if uploaded_files and master_file:
     master_df = pd.read_excel(master_file)
     master_df.columns = master_df.columns.str.strip()
@@ -238,11 +253,11 @@ if uploaded_files and master_file:
     if all_abnormal_data:
         full_df = pd.concat(all_abnormal_data, ignore_index=True)
 
-        # ✅ Add boolean flags
+        # Add boolean flags
         full_df["IS_UNDER"] = full_df[["UV_R", "UV_Y", "UV_B"]].gt(0).any(axis=1)
         full_df["IS_OVER"] = full_df[["OV_R", "OV_Y", "OV_B"]].gt(0).any(axis=1)
 
-        # ✅ Summary using corrected logic
+        # Summary
         summary = full_df.groupby("BUS_METER_NO").agg(
             Days_Abnormal=('DATE', 'nunique'),
             From_Date=('DATE', 'min'),
@@ -257,19 +272,19 @@ if uploaded_files and master_file:
             OV_B_Avg=('OV_B', 'mean')
         ).reset_index()
 
-        # ✅ Convert to %
+        # Percent conversion
         percent_cols = ['UV_R_Avg', 'UV_Y_Avg', 'UV_B_Avg', 'OV_R_Avg', 'OV_Y_Avg', 'OV_B_Avg']
         for col in percent_cols:
             summary[col] = (summary[col] * 100).round(2)
 
-        # ✅ Merge with master data
+        # Merge with master
         merged_summary = summary.merge(
             master_df, how="left",
             left_on="BUS_METER_NO",
             right_on="Connected Energy Meter"
         )
 
-        # ✅ Create Excel report
+        # Create Excel
         output = BytesIO()
         wb = Workbook()
         ws_summary = wb.active
@@ -277,7 +292,7 @@ if uploaded_files and master_file:
         for r in dataframe_to_rows(merged_summary, index=False, header=True):
             ws_summary.append(r)
 
-        # Sheet 2: Raw Abnormal Log
+        # Sheet 2: Raw Log
         ws_raw = wb.create_sheet("Raw_Abnormal_Log")
         for r in dataframe_to_rows(full_df, index=False, header=True):
             ws_raw.append(r)
@@ -290,7 +305,6 @@ if uploaded_files and master_file:
             meter_data_chart = meter_data[["DATE", "UV_R", "UV_Y", "UV_B", "OV_R", "OV_Y", "OV_B"]].copy()
             meter_data_chart[["UV_R", "UV_Y", "UV_B", "OV_R", "OV_Y", "OV_B"]] *= 100
 
-            # ✅ Add TYPE column
             def classify_type(row):
                 is_uv = any([row["UV_R"] > 0, row["UV_Y"] > 0, row["UV_B"] > 0])
                 is_ov = any([row["OV_R"] > 0, row["OV_Y"] > 0, row["OV_B"] > 0])
@@ -305,11 +319,9 @@ if uploaded_files and master_file:
             meter_data_chart["TYPE"] = meter_data_chart.apply(classify_type, axis=1)
             meter_data_chart = meter_data_chart[["DATE", "TYPE", "UV_R", "UV_Y", "UV_B", "OV_R", "OV_Y", "OV_B"]]
 
-            # Header for meter
             ws_chart.cell(row=row_cursor, column=1, value=f"BUS_METER_NO: {meter}")
             row_cursor += 1
 
-            # Add rows to Excel
             for r in dataframe_to_rows(meter_data_chart, index=False, header=True):
                 ws_chart.append(r)
 
@@ -317,7 +329,6 @@ if uploaded_files and master_file:
             chart_start_row = row_cursor
             chart_end_row = chart_start_row + data_rows - 1
 
-            # Chart (skip TYPE column which is col 2)
             chart = BarChart()
             chart.title = f"{meter} - Voltage Chart (%)"
             chart.y_axis.title = "Voltage (%)"
@@ -328,12 +339,12 @@ if uploaded_files and master_file:
             chart.set_categories(cats_ref)
 
             ws_chart.add_chart(chart, f"J{chart_start_row}")
-            row_cursor = chart_end_row + 20  # space for next meter
+            row_cursor = chart_end_row + 20
 
         wb.save(output)
         output.seek(0)
 
-        st.success("✅ Excel report with TYPE column and cleanly spaced charts is ready!")
+        st.success("✅ Excel report with .xlsb/.xlsx support, proper summary and clean charts is ready!")
         st.download_button(
             label="📥 Download Voltage Summary with Charts",
             data=output,

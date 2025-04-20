@@ -174,19 +174,18 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 
 st.set_page_config(page_title="⚡ Voltage Analyzer", layout="wide")
 st.title("⚡ Voltage Abnormal Trend Analyzer with Chart-Embedded Excel")
-st.markdown("Upload daily `.xlsb`, `.xlsx`, or `.xls` voltage files and one static **Master Excel** to generate a full summary report with per-meter charts.")
+st.markdown("Upload daily `.xlsb` or `.xlsx` voltage files and one static **Master Excel** to generate a full summary report with per-meter charts.")
 
-# ✅ Upload voltage files (multiple formats)
+# Accept both xlsb and xlsx files
 uploaded_files = st.file_uploader(
-    "Upload daily `.xlsb`, `.xlsx`, or `.xls` voltage files",
-    type=["xlsb", "xlsx", "xls"],
+    "Upload daily `.xlsb` or `.xlsx` voltage files",
+    type=["xlsb", "xlsx"],
     accept_multiple_files=True
 )
 
-# ✅ Upload master file
 master_file = st.file_uploader("Upload static Master Data Excel", type=["xlsx", "xls"])
 
-# ✅ Extract phase-wise voltage abnormality from any supported format
+# ✅ Extract phase-wise voltage abnormality from either format
 def extract_phasewise_uv_ov(file):
     try:
         if file.name.endswith(".xlsb"):
@@ -196,10 +195,9 @@ def extract_phasewise_uv_ov(file):
                 data = [row for row in sheet.rows()]
             rows = [[cell.v for cell in row] for row in data[2:]]
 
-        elif file.name.endswith((".xlsx", ".xls")):
+        elif file.name.endswith(".xlsx"):
             df = pd.read_excel(file, sheet_name=0, header=None, skiprows=2)
             rows = df.values.tolist()
-
         else:
             st.warning(f"❌ Unsupported file format: {file.name}")
             return None
@@ -238,16 +236,14 @@ def extract_phasewise_uv_ov(file):
         st.error(f"⚠️ Failed to read {file.name}: {e}")
         return None
 
-# ✅ Process data if both daily and master are uploaded
+# 🧠 Processing
 if uploaded_files and master_file:
     master_df = pd.read_excel(master_file)
     master_df.columns = master_df.columns.str.strip()
     master_df["Connected Energy Meter"] = master_df["Connected Energy Meter"].astype(str).str.strip()
 
     all_abnormal_data = []
-
     for file in uploaded_files:
-        st.info(f"📄 Processing: `{file.name}`")
         df = extract_phasewise_uv_ov(file)
         if df is not None and not df.empty:
             all_abnormal_data.append(df)
@@ -257,11 +253,11 @@ if uploaded_files and master_file:
     if all_abnormal_data:
         full_df = pd.concat(all_abnormal_data, ignore_index=True)
 
-        # Add flags
+        # Add boolean flags
         full_df["IS_UNDER"] = full_df[["UV_R", "UV_Y", "UV_B"]].gt(0).any(axis=1)
         full_df["IS_OVER"] = full_df[["OV_R", "OV_Y", "OV_B"]].gt(0).any(axis=1)
 
-        # Create summary
+        # Summary
         summary = full_df.groupby("BUS_METER_NO").agg(
             Days_Abnormal=('DATE', 'nunique'),
             From_Date=('DATE', 'min'),
@@ -276,8 +272,9 @@ if uploaded_files and master_file:
             OV_B_Avg=('OV_B', 'mean')
         ).reset_index()
 
-        # Convert averages to %
-        for col in ['UV_R_Avg', 'UV_Y_Avg', 'UV_B_Avg', 'OV_R_Avg', 'OV_Y_Avg', 'OV_B_Avg']:
+        # Percent conversion
+        percent_cols = ['UV_R_Avg', 'UV_Y_Avg', 'UV_B_Avg', 'OV_R_Avg', 'OV_Y_Avg', 'OV_B_Avg']
+        for col in percent_cols:
             summary[col] = (summary[col] * 100).round(2)
 
         # Merge with master
@@ -287,17 +284,15 @@ if uploaded_files and master_file:
             right_on="Connected Energy Meter"
         )
 
-        # Excel writer
+        # Create Excel
         output = BytesIO()
         wb = Workbook()
-
-        # Sheet 1: Summary
         ws_summary = wb.active
         ws_summary.title = "Final_Summary"
         for r in dataframe_to_rows(merged_summary, index=False, header=True):
             ws_summary.append(r)
 
-        # Sheet 2: Raw log
+        # Sheet 2: Raw Log
         ws_raw = wb.create_sheet("Raw_Abnormal_Log")
         for r in dataframe_to_rows(full_df, index=False, header=True):
             ws_raw.append(r)
@@ -349,7 +344,7 @@ if uploaded_files and master_file:
         wb.save(output)
         output.seek(0)
 
-        st.success("✅ Excel report with .xls/.xlsx/.xlsb support and full analytics is ready!")
+        st.success("✅ Excel report with .xlsb/.xlsx support, proper summary and clean charts is ready!")
         st.download_button(
             label="📥 Download Voltage Summary with Charts",
             data=output,
